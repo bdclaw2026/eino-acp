@@ -38,16 +38,22 @@ type Config struct {
 	// AutoApprove automatically approves all permission requests from the agent.
 	// When false, permission requests are denied.
 	AutoApprove bool
+
+	// ThinkingMode controls extended thinking for claude-agent-acp sessions.
+	// Valid values: "" (off), "adaptive" (Claude decides), "enabled" (always on).
+	// Passed via NewSessionRequest._meta.claudeCode.options.thinking.
+	ThinkingMode string
 }
 
 // ChatModel implements eino's model.ChatModel by communicating with
 // any ACP-compatible coding agent (Claude Code, Codex CLI, etc.)
 // over the Agent Client Protocol.
 type ChatModel struct {
-	command     []string
-	cwd         string
-	env         []string
-	autoApprove bool
+	command      []string
+	cwd          string
+	env          []string
+	autoApprove  bool
+	thinkingMode string
 }
 
 // NewChatModel creates a new ACP chat model.
@@ -70,10 +76,11 @@ func NewChatModel(_ context.Context, config *Config) (*ChatModel, error) {
 	}
 
 	return &ChatModel{
-		command:     config.Command,
-		cwd:         cwd,
-		env:         config.Env,
-		autoApprove: config.AutoApprove,
+		command:      config.Command,
+		cwd:          cwd,
+		env:          config.Env,
+		autoApprove:  config.AutoApprove,
+		thinkingMode: config.ThinkingMode,
 	}, nil
 }
 
@@ -253,9 +260,11 @@ func (cm *ChatModel) runPrompt(ctx context.Context, input []*schema.Message, onU
 		return fmt.Errorf("ACP initialize: %w", err)
 	}
 
+	sessionMeta := cm.buildSessionMeta()
 	sess, err := conn.NewSession(ctx, acp.NewSessionRequest{
 		Cwd:        cm.cwd,
 		McpServers: []acp.McpServer{},
+		Meta:       sessionMeta,
 	})
 	if err != nil {
 		return fmt.Errorf("ACP new session: %w", err)
@@ -272,6 +281,22 @@ func (cm *ChatModel) runPrompt(ctx context.Context, input []*schema.Message, onU
 	}
 
 	return nil
+}
+
+// buildSessionMeta constructs the _meta payload for NewSessionRequest.
+// When ThinkingMode is set, it injects claudeCode.options.thinking so that
+// claude-agent-acp enables the appropriate thinking configuration.
+func (cm *ChatModel) buildSessionMeta() any {
+	if cm.thinkingMode == "" {
+		return nil
+	}
+	return map[string]any{
+		"claudeCode": map[string]any{
+			"options": map[string]any{
+				"thinking": cm.thinkingMode,
+			},
+		},
+	}
 }
 
 func (cm *ChatModel) buildEnv() []string {
